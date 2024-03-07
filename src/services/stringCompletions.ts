@@ -61,6 +61,7 @@ import {
     getPathsBasePath,
     getReplacementSpanForContextToken,
     getResolvePackageJsonExports,
+    getResolvePackageJsonImports,
     getSupportedExtensions,
     getSupportedExtensionsWithJsonIfResolveJsonModule,
     getTextOfJsxAttributeName,
@@ -925,6 +926,30 @@ function getCompletionEntriesForNonRelativeModules(
     getCompletionEntriesFromTypings(host, compilerOptions, scriptPath, fragmentDirectory, extensionOptions, result);
 
     if (moduleResolutionUsesNodeModules(moduleResolution)) {
+        if (getResolvePackageJsonImports(compilerOptions) && startsWith(fragment, "#")) {
+            const packageJsonPath = findPackageJson(scriptPath, host);
+            if (packageJsonPath) {
+                const packageJson = readJson(packageJsonPath, host as { readFile: (filename: string) => string | undefined; });
+                const imports = (packageJson as any).imports;
+                if (typeof imports === "object") {
+                    const keys = getOwnKeys(imports);
+                    const packageDirectory = getDirectoryPath(packageJsonPath);
+                    const conditions = getConditions(compilerOptions, mode);
+                    addCompletionEntriesFromPathsOrExports(
+                        result,
+                        /*isExports*/ true,
+                        fragment,
+                        packageDirectory,
+                        extensionOptions,
+                        host,
+                        keys,
+                        key => singleElementArray(getPatternFromFirstMatchingCondition(imports[key], conditions)),
+                        comparePatternKeys,
+                    );
+                }
+            }
+        }
+
         // If looking for a global package name, don't just include everything in `node_modules` because that includes dependencies' own dependencies.
         // (But do if we didn't find anything, e.g. 'package.json' missing.)
         let foundGlobal = false;
@@ -1032,9 +1057,9 @@ function getCompletionsForPathMapping(
     const remainingFragment = tryRemovePrefix(fragment, pathPrefix);
     if (remainingFragment === undefined) {
         const starIsFullPathComponent = path[path.length - 2] === "/";
-        return starIsFullPathComponent ? justPathMappingName(pathPrefix, ScriptElementKind.directory) : flatMap(patterns, pattern => getModulesForPathsPattern("", packageDirectory, pattern, extensionOptions, isExportsWildcard, host)?.map(({ name, ...rest }) => ({ name: pathPrefix + name, ...rest })));
+        return starIsFullPathComponent ? justPathMappingName(pathPrefix, ScriptElementKind.directory) : flatMap(patterns, pattern => getModulesForPathsPattern("", "", packageDirectory, pattern, extensionOptions, isExportsWildcard, host)?.map(({ name, ...rest }) => ({ name: pathPrefix + name, ...rest })));
     }
-    return flatMap(patterns, pattern => getModulesForPathsPattern(remainingFragment, packageDirectory, pattern, extensionOptions, isExportsWildcard, host));
+    return flatMap(patterns, pattern => getModulesForPathsPattern(remainingFragment, pathPrefix, packageDirectory, pattern, extensionOptions, isExportsWildcard, host));
 
     function justPathMappingName(name: string, kind: ScriptElementKind.directory | ScriptElementKind.scriptElement): readonly NameAndKind[] {
         return startsWith(name, fragment) ? [{ name: removeTrailingDirectorySeparator(name), kind, extension: undefined }] : emptyArray;
@@ -1043,6 +1068,7 @@ function getCompletionsForPathMapping(
 
 function getModulesForPathsPattern(
     fragment: string,
+    pathPrefix: string,
     packageDirectory: string,
     pattern: string,
     extensionOptions: ExtensionOptions,
@@ -1089,6 +1115,8 @@ function getModulesForPathsPattern(
         ? matchingSuffixes.map(suffix => "**/*" + suffix)
         : ["./*"];
 
+    const nameShouldBePrefixed = fragmentHasPath || containsSlash(pathPrefix)
+
     const matches = mapDefined(tryReadDirectory(host, baseDirectory, extensionOptions.extensionsToSearch, /*exclude*/ undefined, includeGlobs), match => {
         const trimmedWithPattern = trimPrefixAndSuffix(match);
         if (trimmedWithPattern) {
@@ -1096,7 +1124,7 @@ function getModulesForPathsPattern(
                 return directoryResult(getPathComponents(removeLeadingDirectorySeparator(trimmedWithPattern))[1]);
             }
             const { name, extension } = getFilenameWithExtensionOption(trimmedWithPattern, host.getCompilationSettings(), extensionOptions, isExportsWildcard);
-            return nameAndKind(name, ScriptElementKind.scriptElement, extension);
+            return nameAndKind(nameShouldBePrefixed ? name : pathPrefix + name, ScriptElementKind.scriptElement, extension);
         }
     });
 
